@@ -23,7 +23,7 @@ pub struct OutputConfig {
     #[serde(default = "default_true")]
     pub fallback_to_clipboard: bool,
 
-    /// Custom driver order for type mode (overrides default: wtype -> dotool -> ydotool -> clipboard)
+    /// Custom driver order for type mode (overrides default: wtype -> eitype -> dotool -> xdotool -> ydotool -> clipboard -> xclip)
     /// Specify which drivers to try and in what order.
     /// Example: ["ydotool", "wtype"] to prefer ydotool over wtype
     #[serde(default)]

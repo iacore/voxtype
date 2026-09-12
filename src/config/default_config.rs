@@ -207,9 +207,9 @@ mode = "type"
 fallback_to_clipboard = true
 
 # Custom driver order for type mode (optional)
-# Default order: wtype -> dotool -> ydotool -> clipboard
+# Default order: wtype -> eitype -> dotool -> xdotool -> ydotool -> clipboard -> xclip
 # Customize to prefer a specific driver or change the fallback order.
-# Available drivers: wtype, dotool, ydotool, clipboard
+# Available drivers: wtype, eitype, dotool, xdotool, ydotool, clipboard, xclip
 # Example: prefer ydotool over dotool:
 #   driver_order = ["wtype", "ydotool", "dotool", "clipboard"]
 # Example: use only ydotool, no fallback:

@@ -178,7 +178,7 @@ pub(crate) async fn show_config(config: &config::Config) -> anyhow::Result<()> {
                 .join(", ")
         );
     } else {
-        println!("  driver_order = (default: wtype -> dotool -> ydotool -> clipboard)");
+        println!("  driver_order = (default: wtype -> eitype -> dotool -> xdotool -> ydotool -> clipboard -> xclip)");
     }
     println!("  type_delay_ms = {}", config.output.type_delay_ms);
     println!("  pre_type_delay_ms = {}", config.output.pre_type_delay_ms);
