@@ -73,6 +73,7 @@ pub struct OutputChainStatus {
     pub display_server: DisplayServer,
     pub wtype: OutputToolStatus,
     pub eitype: OutputToolStatus,
+    pub xdotool: OutputToolStatus,
     pub ydotool: OutputToolStatus,
     pub ydotool_daemon: bool,
     pub wl_copy: OutputToolStatus,
@@ -225,6 +226,16 @@ pub async fn detect_output_chain() -> OutputChainStatus {
         None
     };
 
+    // Check xdotool (X11 via XTEST; no daemon required)
+    let xdotool_path = get_command_path("xdotool").await;
+    let xdotool_installed = xdotool_path.is_some();
+    let xdotool_available = xdotool_installed && display_server == DisplayServer::X11;
+    let xdotool_note = if xdotool_installed && display_server != DisplayServer::X11 {
+        Some("X11 only".to_string())
+    } else {
+        None
+    };
+
     // Check ydotool
     let ydotool_path = get_command_path("ydotool").await;
     let ydotool_installed = ydotool_path.is_some();
@@ -289,6 +300,8 @@ pub async fn detect_output_chain() -> OutputChainStatus {
         Some("wtype".to_string())
     } else if eitype_available {
         Some("eitype".to_string())
+    } else if xdotool_available {
+        Some("xdotool".to_string())
     } else if ydotool_available {
         Some("ydotool".to_string())
     } else if pbcopy_available {
@@ -314,6 +327,13 @@ pub async fn detect_output_chain() -> OutputChainStatus {
             available: eitype_available,
             path: eitype_path,
             note: eitype_note,
+        },
+        xdotool: OutputToolStatus {
+            name: "xdotool",
+            installed: xdotool_installed,
+            available: xdotool_available,
+            path: xdotool_path,
+            note: xdotool_note,
         },
         ydotool: OutputToolStatus {
             name: "ydotool",
@@ -393,6 +413,11 @@ pub fn print_output_chain_status(status: &OutputChainStatus) {
             status.display_server == DisplayServer::Wayland,
         );
 
+        // xdotool (X11 via XTEST; no daemon required)
+        if status.display_server == DisplayServer::X11 || status.xdotool.installed {
+            print_tool_status(&status.xdotool, status.display_server == DisplayServer::X11);
+        }
+
         // ydotool
         if status.ydotool.installed {
             let daemon_status = if status.ydotool_daemon {
@@ -437,6 +462,7 @@ pub fn print_output_chain_status(status: &OutputChainStatus) {
             "pbcopy" => "pbcopy (clipboard, requires manual paste)",
             "wtype" => "wtype (CJK supported)",
             "eitype" => "eitype (libei, GNOME/KDE native)",
+            "xdotool" => "xdotool (X11 XTEST, CJK supported)",
             "ydotool" => "ydotool (CJK not supported)",
             "clipboard" => "clipboard (requires manual paste)",
             _ => method.as_str(),
