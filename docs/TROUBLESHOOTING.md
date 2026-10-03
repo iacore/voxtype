@@ -939,7 +939,20 @@ dropped or swapped for the previous one. Measured on a GTK4 entry typing twelve
 Han characters with a driver that rebinds a keycode per character: 11 were
 lost at zero inter-key delay; at 2 ms, 3; intact from 5 ms on.
 
-**Solution:** Use the native `x11` driver, which binds every distinct character
+**Solution:** If fcitx5 is running, insert the text through its input method
+instead: the `fcitx5` driver commits the transcription to the focused text field
+by the same path fcitx5 uses for its own candidates, so there are no keycodes and
+no mapping for clients to catch up on. It needs the `fcitx5-commit` addon
+(`yay -S fcitx5-commit-git`, then `fcitx5 -r -d`) and only reaches applications
+that are fcitx5 clients, so a typing driver goes behind it:
+
+```toml
+[output]
+mode = "type"
+driver_order = ["fcitx5", "x11"]
+```
+
+Without fcitx5, use the native `x11` driver, which binds every distinct character
 of a transcription in a single mapping change and then waits once for clients
 to catch up, instead of rebinding a keycode per character:
 

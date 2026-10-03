@@ -163,6 +163,24 @@ pub enum OutputError {
     )]
     X11ClipboardToolMissing,
 
+    #[error(
+        "fcitx5 has no focused input field to commit to.\n  \
+         The fcitx5 driver inserts text through the input method, so the \
+         application being typed into must be an fcitx5 client: its toolkit \
+         needs an fcitx5 input-method module, or it must use fcitx5's XIM \
+         server. Use a typing driver for anything else."
+    )]
+    Fcitx5NoInputContext,
+
+    #[error(
+        "The fcitx5-commit addon is not loaded, so voxtype cannot insert text \
+         through fcitx5.\n  \
+         fcitx5 has no built-in way to insert text; the addon provides it.\n    \
+         yay -S fcitx5-commit-git   # Arch / Manjaro\n    \
+         fcitx5 -r -d               # fcitx5 loads addons only at startup"
+    )]
+    Fcitx5AddonMissing,
+
     #[error("Text injection failed: {0}")]
     InjectionFailed(String),
 

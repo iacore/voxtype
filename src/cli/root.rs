@@ -299,9 +299,9 @@ pub struct Cli {
         value_name = "DRIVERS",
         help_heading = "Output",
         long_help = "Output driver order for type mode (comma-separated).\n\
-        Available: wtype, eitype, dotool, x11, ydotool, clipboard, xclip.\n\
+        Available: wtype, eitype, dotool, fcitx5, x11, xdotool, ydotool, clipboard, xclip.\n\
         Example: --driver=ydotool,wtype,clipboard\n\
-        Example: --driver=x11,xclip  (native X11 typing, no extra tools installed)"
+        Example: --driver=fcitx5,x11  (insert via fcitx5, else type into X11)"
     )]
     pub driver: Option<String>,
 

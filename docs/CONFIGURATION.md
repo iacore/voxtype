@@ -2231,6 +2231,7 @@ fallback_to_clipboard = true  # Use clipboard if typing drivers fail
 Custom order of output drivers to try when `mode = "type"`. Each driver is tried in sequence until one succeeds. This allows you to prefer specific drivers or exclude others entirely.
 
 **Available drivers:**
+- `fcitx5` - inserts the transcription through fcitx5's input method: the text is committed to the focused text field by the same path fcitx5 uses for an input-method candidate, so there are no keycodes, no keyboard-layout dependency, and none of the keyboard-mapping settle time the X11 typing drivers need. **Opt-in**, requires fcitx5 running with the `fcitx5-commit` addon, and only reaches applications that are fcitx5 clients, so put a typing driver behind it. See [Inserting text through fcitx5](#inserting-text-through-fcitx5).
 - `wtype` - Wayland virtual keyboard protocol (best CJK/Unicode support, wlroots compositors only)
 - `eitype` - Wayland via libei/EI protocol (works on GNOME, KDE, and compositors with libei support). On KDE Plasma 6, each invocation briefly registers via the XDG RemoteDesktop portal, which can cause a system-tray icon to flicker during streaming dictation (many fast typing calls). Prefer `dotool` for streaming if you're on KDE.
 - `dotool` - uinput-based typing (supports keyboard layouts, works on X11/Wayland/TTY). For streaming backends (Parakeet, Soniox), run `dotoold` to make this **much** faster when no per-call layout or variant hint is needed — see [Streaming performance: dotoold fast path](#streaming-performance-dotoold-fast-path) below.
@@ -2257,6 +2258,9 @@ driver_order = ["x11", "dotool", "ydotool", "xclip"]
 
 # Type CJK into X11 windows without the clipboard (native XTEST typing)
 driver_order = ["x11", "xclip"]
+
+# Insert through fcitx5's input method where possible, else type into X11
+driver_order = ["fcitx5", "x11"]
 
 # Force single driver (no fallback)
 driver_order = ["ydotool"]
@@ -2339,6 +2343,61 @@ text to key events. It does **not** switch the active desktop/compositor layout.
 If the focused app is still using an English layout, Russian phonetic key events
 will be interpreted as English letters. Switch your desktop layout to the target
 layout/variant before dictating.
+
+### Inserting text through fcitx5
+
+**Driver:** `fcitx5` (opt-in, `driver_order = ["fcitx5", "x11"]`)
+
+fcitx5 has no built-in way to insert text from another program. Its D-Bus API
+can switch input methods (`Controller1`), and `InputContext1.CommitString` is a
+signal fcitx5 sends *to* its clients, not a method anything can call. The
+`fcitx5-commit` addon fills that gap: it exports `CommitString(s) -> b` and
+commits the string into the focused input context.
+
+**Install (Arch):**
+
+```bash
+yay -S fcitx5-commit-git
+fcitx5 -r -d          # fcitx5 loads addons only at startup
+```
+
+The addon answers `false` when no focused text field has an input context.
+voxtype reads that as "could not deliver" and moves on to the next driver in
+`driver_order`, so a transcription is never lost to a driver that could not
+place it.
+
+**Why it is preferred where it works.** The typing drivers press keycodes, which
+means binding every character the active layout cannot produce to a keycode,
+waiting for clients to re-read the keyboard mapping, and depending on the layout
+being what you expect. Committing text skips all of that: one D-Bus call, exact
+Unicode, nothing for a keyboard layout to get wrong. It presses no keys, so the
+modifier-key guard leaves it alone and it still delivers when a modifier is held
+that would otherwise have to be waited out.
+
+**Coverage.** Only applications that are fcitx5 clients have an input context:
+
+| Application | Reached through | Needs |
+|---|---|---|
+| GTK3 / GTK4 apps | the fcitx5 GTK input-method module | `fcitx5-gtk`, and `GTK_IM_MODULE=fcitx` |
+| Qt apps | the fcitx5 Qt platform input context | `fcitx5-qt`, and `QT_IM_MODULE=fcitx` |
+| Xlib apps (xterm, older toolkits) | fcitx5's XIM server | `XMODIFIERS=@im=fcitx` |
+| Wayland apps | the input-method protocol | fcitx5's Wayland frontend |
+
+Terminals and TTYs, and applications whose toolkit has no input-method module,
+cannot be reached this way, so keep a typing driver behind fcitx5:
+
+```toml
+[output]
+mode = "type"
+driver_order = ["fcitx5", "x11"]
+```
+
+To see which applications are currently connected, run `fcitx5-diagnose` and read
+its input-method module and XIM sections.
+
+**auto_submit is not honored.** Committing a string cannot press Enter, and a
+committed newline is a line break rather than a submit in applications where
+Enter submits.
 
 ### dotool_xkb_layout
 

@@ -194,6 +194,7 @@ The `input` group is only required if you use voxtype's built-in evdev hotkey (e
 Neither Wayland nor X11 provide a universal way for applications to simulate keyboard input. Voxtype uses a fallback chain:
 - **wtype** on Wayland - uses the virtual-keyboard protocol, supports CJK characters, no daemon needed
 - **dotool** as fallback - uses the kernel's uinput interface, supports keyboard layouts, no daemon needed
+- **fcitx5** (opt-in, `driver_order = ["fcitx5", "x11"]`) - inserts the text through fcitx5's input method, the way fcitx5 inserts its own candidates. No keycodes, so no keyboard layout or keymap handling at all; it needs the `fcitx5-commit` addon and only reaches applications that are fcitx5 clients
 - **x11** (opt-in, `driver_order = ["x11"]`) - native X11 typing through XTEST with a generated Unicode keymap; types CJK without the clipboard and without an external tool
 - **ydotool** on X11 (or Wayland fallback) - uses the kernel's uinput interface, requires a daemon
 

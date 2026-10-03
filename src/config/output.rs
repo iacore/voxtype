@@ -373,6 +373,11 @@ pub enum OutputDriver {
     Eitype,
     /// dotool - Works on X11/Wayland/TTY, supports keyboard layouts
     Dotool,
+    /// fcitx5 - Commits the transcription to the focused input field through
+    /// fcitx5's input method (needs the fcitx5-commit addon). No keycodes, so
+    /// no keyboard layout or keymap dependency; reaches only fcitx5 clients.
+    /// Opt-in: not part of the default chain.
+    Fcitx5,
     /// x11 - Native X11 typing via XTEST with a generated Unicode keymap,
     /// no external tool required. Opt-in: not part of the default chain.
     X11,
@@ -392,6 +397,7 @@ impl std::fmt::Display for OutputDriver {
             OutputDriver::Wtype => write!(f, "wtype"),
             OutputDriver::Eitype => write!(f, "eitype"),
             OutputDriver::Dotool => write!(f, "dotool"),
+            OutputDriver::Fcitx5 => write!(f, "fcitx5"),
             OutputDriver::X11 => write!(f, "x11"),
             OutputDriver::Xdotool => write!(f, "xdotool"),
             OutputDriver::Ydotool => write!(f, "ydotool"),
@@ -409,13 +415,14 @@ impl std::str::FromStr for OutputDriver {
             "wtype" => Ok(OutputDriver::Wtype),
             "eitype" => Ok(OutputDriver::Eitype),
             "dotool" => Ok(OutputDriver::Dotool),
+            "fcitx5" => Ok(OutputDriver::Fcitx5),
             "x11" => Ok(OutputDriver::X11),
             "xdotool" => Ok(OutputDriver::Xdotool),
             "ydotool" => Ok(OutputDriver::Ydotool),
             "clipboard" => Ok(OutputDriver::Clipboard),
             "xclip" => Ok(OutputDriver::Xclip),
             _ => Err(format!(
-                "Unknown driver '{}'. Valid options: wtype, eitype, dotool, x11, xdotool, ydotool, clipboard, xclip",
+                "Unknown driver '{}'. Valid options: wtype, eitype, dotool, fcitx5, x11, xdotool, ydotool, clipboard, xclip",
                 s
             )),
         }
@@ -509,6 +516,10 @@ mod tests {
             OutputDriver::Clipboard
         );
         assert_eq!(
+            "fcitx5".parse::<OutputDriver>().unwrap(),
+            OutputDriver::Fcitx5
+        );
+        assert_eq!(
             "xclip".parse::<OutputDriver>().unwrap(),
             OutputDriver::Xclip
         );
@@ -533,6 +544,7 @@ mod tests {
     fn test_output_driver_display() {
         assert_eq!(OutputDriver::Wtype.to_string(), "wtype");
         assert_eq!(OutputDriver::Dotool.to_string(), "dotool");
+        assert_eq!(OutputDriver::Fcitx5.to_string(), "fcitx5");
         assert_eq!(OutputDriver::X11.to_string(), "x11");
         assert_eq!(OutputDriver::Xdotool.to_string(), "xdotool");
         assert_eq!(OutputDriver::Ydotool.to_string(), "ydotool");

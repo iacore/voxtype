@@ -86,6 +86,7 @@ verification.
 | [Output Chain Verification](smoke_tests/output-chain-verification.md) | Full fallback chain wtype, dotool, ydotool, clipboard |
 | [Delay Options](smoke_tests/delay-options.md) | `--delay` and per-driver inter-keystroke delays |
 | [Native X11 Typing](smoke_tests/x11-native-typing.md) | The opt-in `x11` driver types CJK without clipboard or external tools; the keymap settle is what makes it work |
+| [fcitx5 Text Insertion](smoke_tests/fcitx5-typing.md) | The opt-in `fcitx5` driver inserts text through fcitx5's input method: no keycodes, no settle, falls through when nothing has focus |
 | [Post-Processing Command](smoke_tests/post-processing-command.md) | LLM cleanup command runs on the transcript before output |
 
 ## Integrations

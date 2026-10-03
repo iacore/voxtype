@@ -1738,7 +1738,7 @@ mode = "type"
 driver_order = ["ydotool", "wtype", "clipboard"]
 ```
 
-**Available drivers:** `wtype`, `eitype`, `dotool`, `x11` (native X11 typing), `ydotool`, `clipboard` (wl-copy), `xclip` (X11)
+**Available drivers:** `wtype`, `eitype`, `dotool`, `fcitx5` (insert through fcitx5's input method), `x11` (native X11 typing), `ydotool`, `clipboard` (wl-copy), `xclip` (X11)
 
 **Examples:**
 
@@ -1749,6 +1749,9 @@ driver_order = ["x11", "ydotool", "xclip"]
 # Type CJK into X11 windows without the clipboard: the x11 driver binds each
 # distinct character to a keycode of its own instead of pasting
 driver_order = ["x11", "xclip"]
+
+# Insert through fcitx5 where the application is an fcitx5 client, else type
+driver_order = ["fcitx5", "x11"]
 
 # Force ydotool only (no fallback)
 driver_order = ["ydotool"]

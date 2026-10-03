@@ -20,6 +20,11 @@
 //! Paste mode (clipboard + Ctrl+V) helps with system with non US keyboard layouts.
 //!
 //! Opt-in drivers, not part of the default chain:
+//! - fcitx5 - Commits the transcription to the focused input field through
+//!   fcitx5's input method (D-Bus, needs the fcitx5-commit addon). No keycodes,
+//!   so no layout or keymap dependency and no settle wait; it reaches only
+//!   applications that are fcitx5 clients. Enable with
+//!   `driver_order = ["fcitx5", "x11"]`.
 //! - x11 - Native X11 typing through XTEST with a generated Unicode keymap.
 //!   Types CJK and other text the active layout cannot produce, with no
 //!   clipboard and no external typing tool. Enable with `driver_order = ["x11"]`.
@@ -29,6 +34,7 @@ pub mod cgevent;
 pub mod clipboard;
 pub mod dotool;
 pub mod eitype;
+pub mod fcitx5;
 // modifier_guard is evdev-based; macOS has its own osascript modifier handling.
 #[cfg(target_os = "linux")]
 pub mod modifier_guard;
@@ -292,6 +298,7 @@ fn create_driver_output(
             config.dotool_xkb_layout.clone(),
             config.dotool_xkb_variant.clone(),
         )),
+        OutputDriver::Fcitx5 => Box::new(fcitx5::Fcitx5Output::new(config.append_text.clone())),
         OutputDriver::X11 => Box::new(x11::X11Output::new(
             config.type_delay_ms,
             pre_type_delay_ms,
@@ -498,6 +505,10 @@ pub struct OutputOptions<'a> {
 /// Output methods that synthesize keystrokes the compositor can interpret as
 /// keybindings when modifiers are held. Used to filter the chain when the
 /// modifier-release wait times out.
+///
+/// Methods that deliver text without pressing keys - fcitx5 and the clipboard
+/// drivers - are deliberately absent: a held modifier cannot turn them into a
+/// shortcut, so there is no reason to skip them.
 fn is_keystroke_method(name: &str) -> bool {
     matches!(
         name,
