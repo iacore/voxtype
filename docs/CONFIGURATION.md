@@ -2642,6 +2642,14 @@ this value is `0`. KWin can otherwise accept a zero-delay event burst while
 silently dropping the tail of a long dictation. Explicit nonzero values are
 preserved, and other output drivers and desktops keep the configured value.
 
+Typing text the keyboard layout cannot produce (CJK, accented characters) needs
+a keyboard-mapping change on X11, and the `xdotool` driver raises this value to
+a 20 ms floor for such text: clients that resolve key events themselves (GTK4,
+Qt6, Chromium, terminals) need the changed mapping to reach them before the key
+is pressed, or characters are dropped or swapped. Because `xdotool` rebinds a
+keycode per character, that floor narrows the race rather than closing it; the
+`x11` driver binds every distinct character once and waits once.
+
 **Example:**
 ```toml
 [output]

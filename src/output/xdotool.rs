@@ -14,6 +14,26 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
+/// Smallest per-character delay used when the text needs keymap remapping.
+///
+/// `xdotool type` binds one keycode per character and presses it immediately,
+/// so clients that resolve key events with xkbcommon (GTK4, Qt6, Chromium,
+/// terminals) can read a keycode whose keysym moved under them, losing or
+/// reordering characters. Measured on a GTK4 entry typing twelve Han
+/// characters: 1 arrived at `--delay 0`, 5 at 1 ms, and 10 of 12 at 2 ms.
+///
+/// 20 ms is twice the smallest delay that measured clean, because rebinding per
+/// character is a race rather than a handshake: one run of twelve characters
+/// still lost one at 10 ms. The x11 driver avoids the race altogether by
+/// binding every distinct character once and waiting once.
+const MIN_KEYMAP_SETTLE_DELAY_MS: u32 = 20;
+
+/// Whether typing `text` needs the keyboard mapping changed: characters the
+/// ASCII range covers are already reachable, anything else is not.
+fn needs_keymap_remap(text: &str) -> bool {
+    !text.is_ascii()
+}
+
 /// xdotool-based text output.
 pub struct XdotoolOutput {
     /// Delay between keypresses in milliseconds
@@ -42,12 +62,23 @@ impl XdotoolOutput {
         }
     }
 
+    /// The delay to type `text` with: the configured one, raised to the keymap
+    /// settle floor when the text needs the keyboard mapping changed.
+    fn effective_type_delay_ms(&self, text: &str) -> u32 {
+        if needs_keymap_remap(text) {
+            self.type_delay_ms.max(MIN_KEYMAP_SETTLE_DELAY_MS)
+        } else {
+            self.type_delay_ms
+        }
+    }
+
     /// Run `xdotool type` for the given text.
     async fn type_text(&self, text: &str) -> Result<(), OutputError> {
+        let delay_ms = self.effective_type_delay_ms(text);
         let mut cmd = Command::new("xdotool");
         cmd.arg("type")
             .arg("--delay")
-            .arg(self.type_delay_ms.to_string())
+            .arg(delay_ms.to_string())
             .arg("--clearmodifiers")
             .arg("--")
             .arg(text)
@@ -56,7 +87,7 @@ impl XdotoolOutput {
 
         tracing::debug!(
             "Running: xdotool type --delay {} --clearmodifiers -- \"{}\"",
-            self.type_delay_ms,
+            delay_ms,
             text.chars().take(20).collect::<String>()
         );
 
@@ -138,5 +169,48 @@ impl TextOutput for XdotoolOutput {
 
     fn name(&self) -> &'static str {
         "xdotool"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ascii_text_keeps_the_configured_delay() {
+        let output = XdotoolOutput::new(0, 0, false, None);
+        assert_eq!(output.effective_type_delay_ms("hello world"), 0);
+    }
+
+    #[test]
+    fn text_needing_a_keymap_change_gets_the_settle_floor() {
+        let output = XdotoolOutput::new(0, 0, false, None);
+        assert_eq!(
+            output.effective_type_delay_ms("中文"),
+            MIN_KEYMAP_SETTLE_DELAY_MS
+        );
+        assert_eq!(
+            output.effective_type_delay_ms("héllo"),
+            MIN_KEYMAP_SETTLE_DELAY_MS
+        );
+        assert_eq!(
+            output.effective_type_delay_ms("hello 中文"),
+            MIN_KEYMAP_SETTLE_DELAY_MS
+        );
+    }
+
+    #[test]
+    fn a_configured_delay_above_the_floor_is_kept() {
+        let output = XdotoolOutput::new(50, 0, false, None);
+        assert_eq!(output.effective_type_delay_ms("中文"), 50);
+        assert_eq!(output.effective_type_delay_ms("ascii"), 50);
+    }
+
+    #[test]
+    fn needs_keymap_remap_covers_non_ascii_only() {
+        assert!(!needs_keymap_remap("plain ascii \n\t~!@#"));
+        assert!(needs_keymap_remap("é"));
+        assert!(needs_keymap_remap("中"));
+        assert!(needs_keymap_remap("🦜"));
     }
 }
