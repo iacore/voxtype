@@ -79,7 +79,32 @@ character before X clients have read the changed keyboard mapping.
 run of the measurement that shaped this default typed `测试一二三四五六七八九十`
 and the client reported `测试`. This is the failure the driver exists to avoid.
 
-## 4. Opt-in, and clean on other sessions
+## 5. One keymap change per transcription, not per character
+
+The driver pays its settle waits per keyboard-mapping change, so the number of
+changes is the typing speed. `examples/x11_type_probe.rs` types a string into a
+window it owns, resolves the key events with its own copy of the mapping
+(refreshed on `MappingNotify`, like GTK4 or a terminal), and reports both.
+
+```bash
+Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
+DISPLAY=:99 cargo run --example x11_type_probe -- "今天天气很好我们一起去公园散步看看花"
+```
+
+**Expected:** the `received:` line matches the input, the probe exits zero, and
+the summary looks like this:
+
+```text
+typed 18 chars in 60ms: 3 mapping change(s), 27 press(es), 18 char(s) received
+```
+
+Three notifications are one mapping change, its restore, and the server's
+startup notification. A driver that rebinds a keycode per character reported 17
+changes and 625 ms for the same string - and the character-at-a-time
+appearance that goes with it. If the count tracks the number of distinct
+characters rather than staying small, the batching has regressed.
+
+## 6. Opt-in, and clean on other sessions
 
 ```bash
 # Default chain must not have changed: the x11 driver is not tried unless asked for

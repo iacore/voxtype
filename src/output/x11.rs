@@ -16,6 +16,16 @@
 //! once for each change to settle, so the settle cost is paid per transcription
 //! instead of per character.
 //!
+//! Two details make "one change" true rather than aspirational. A
+//! `ChangeKeyboardMapping` request writes an unbroken range of keycodes, and
+//! an Xorg keymap's unused keycodes are scattered singletons (15 of them,
+//! runs of one and two, on the machine this was measured on), so the request
+//! spans from the first unused keycode to the last and restates the keysyms of
+//! the bound keycodes in between. And each unused keycode carries two
+//! characters, one on its unshifted level and one on its shifted, so a keymap
+//! with 15 unused keycodes covers 30 distinct characters per change. Only text
+//! with more distinct characters than that takes a second change.
+//!
 //! Requirements: an X server with XTEST (Xorg, XWayland). No external tool, no
 //! daemon, and no libX11 at build or run time - the X protocol is spoken
 //! directly over the socket.
@@ -121,32 +131,22 @@ impl Layout {
     }
 }
 
-/// Runs of keycodes no level of the current mapping binds to anything, and
-/// which are therefore free to point at a generated character mapping.
+/// Keycodes no level of the current mapping binds to anything, and which are
+/// therefore free to point at a generated character mapping.
 ///
-/// Each run is contiguous and ascending, because one `ChangeKeyboardMapping`
-/// request writes an unbroken range. Runs are ordered longest first, and
-/// highest first among equals, so the common case needs a single mapping change
-/// and stays as far as possible from keycodes a physical keyboard might send.
-fn spare_keycode_runs(keysyms: &[u32], per_keycode: usize, min_keycode: u8) -> Vec<Vec<u8>> {
+/// Ascending, because one `ChangeKeyboardMapping` request writes an unbroken
+/// range and the request this driver sends covers everything from the first to
+/// the last of these, restating the keysyms of the bound keycodes it spans.
+fn spare_keycodes(keysyms: &[u32], per_keycode: usize, min_keycode: u8) -> Vec<u8> {
     if per_keycode == 0 {
         return Vec::new();
     }
-    let mut runs: Vec<Vec<u8>> = Vec::new();
-    let mut current: Vec<u8> = Vec::new();
-    for (index, level) in keysyms.chunks(per_keycode).enumerate() {
-        let keycode = min_keycode.wrapping_add(index as u8);
-        if level.iter().all(|keysym| *keysym == 0) {
-            current.push(keycode);
-        } else if !current.is_empty() {
-            runs.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        runs.push(current);
-    }
-    runs.sort_by(|a, b| b.len().cmp(&a.len()).then(b[0].cmp(&a[0])));
-    runs
+    keysyms
+        .chunks(per_keycode)
+        .enumerate()
+        .filter(|(_, level)| level.iter().all(|keysym| *keysym == 0))
+        .map(|(index, _)| min_keycode.wrapping_add(index as u8))
+        .collect()
 }
 
 /// The keysym that types `ch`, if the X protocol has one.
@@ -176,29 +176,41 @@ fn char_for_keysym(keysym: u32) -> Option<char> {
     }
 }
 
+/// One keycode's generated mapping: the keysym on its unshifted level and the
+/// one on its shifted level, 0 for a level this batch left unused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Binding {
+    keycode: u8,
+    unshifted: u32,
+    shifted: u32,
+}
+
 /// One keymap change plus the keystrokes that depend on it.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Batch {
-    /// keycode -> keysym to bind before pressing `strokes`, ascending keycodes
-    /// from one contiguous run
-    remaps: Vec<(u8, u32)>,
+    /// Ascending keycodes and the keysyms to write for them
+    bindings: Vec<Binding>,
     /// The characters to press, in the order they appear in the text, with the
     /// layout's own keycodes for characters it can already produce
     strokes: Vec<Stroke>,
 }
 
 /// Split `text` into batches, binding every character the layout lacks to a
-/// keycode of its own.
+/// spare keycode of its own.
 ///
 /// Characters the layout already produces are pressed as they are; a character
-/// that needs a binding keeps it for the rest of its batch. Returns the batches
-/// and the number of characters no keycode was left to bind (which the caller
-/// reports rather than typing the text partially).
-fn plan(text: &str, layout: &Layout, runs: &[Vec<u8>]) -> (Vec<Batch>, usize) {
+/// that needs a binding keeps it for the rest of its batch. Each spare keycode
+/// carries two characters, the first on its unshifted level and the second on
+/// its shifted level, so `levels` (1 or 2) characters fit per keycode before
+/// the batch is full and the next batch rebinds the same keycodes. Returns the
+/// batches and the number of characters no keycode was left to bind (which the
+/// caller reports rather than typing the text partially).
+fn plan(text: &str, layout: &Layout, spares: &[u8], levels: usize) -> (Vec<Batch>, usize) {
+    let capacity = spares.len() * levels;
     let mut batches: Vec<Batch> = Vec::new();
     let mut batch = Batch::default();
-    let mut bound: HashMap<u32, u8> = HashMap::new();
-    let mut run_index = 0usize;
+    let mut bound: HashMap<u32, Stroke> = HashMap::new();
+    let mut used = 0usize;
     let mut unbound = 0usize;
 
     for ch in text.chars() {
@@ -209,35 +221,43 @@ fn plan(text: &str, layout: &Layout, runs: &[Vec<u8>]) -> (Vec<Batch>, usize) {
         let Some(keysym) = keysym_for(ch) else {
             continue;
         };
-        if let Some(keycode) = bound.get(&keysym) {
-            batch.strokes.push(Stroke {
-                keycode: *keycode,
-                shift: false,
-            });
+        if let Some(stroke) = bound.get(&keysym) {
+            batch.strokes.push(*stroke);
             continue;
         }
-        if runs.is_empty() {
+        if capacity == 0 {
             unbound += 1;
             continue;
         }
-        // Advance to a run with a free slot, flushing what is queued: one
-        // request covers one run, so a batch never straddles two. Wrapping
-        // around reuses the runs for a later batch, so the text a driver can
-        // type is not capped by how many keycodes the mapping leaves unused.
-        while batch.remaps.len() >= runs[run_index].len() {
+        if used >= capacity {
+            // The batch has bound every spare keycode. Pressing these
+            // keycodes again needs a new mapping, and the old one has to have
+            // reached the client first, so flush and start over on the same
+            // keycodes.
             if !batch.strokes.is_empty() {
                 batches.push(std::mem::take(&mut batch));
             }
             bound.clear();
-            run_index = (run_index + 1) % runs.len();
+            used = 0;
         }
-        let keycode = runs[run_index][batch.remaps.len()];
-        batch.remaps.push((keycode, keysym));
-        bound.insert(keysym, keycode);
-        batch.strokes.push(Stroke {
+        let keycode = spares[used / levels];
+        let shifted = levels == 2 && used % levels == 1;
+        let stroke = Stroke {
             keycode,
-            shift: false,
-        });
+            shift: shifted,
+        };
+        let binding = Binding {
+            keycode,
+            unshifted: if shifted { 0 } else { keysym },
+            shifted: if shifted { keysym } else { 0 },
+        };
+        match batch.bindings.last_mut() {
+            Some(last) if last.keycode == keycode => last.shifted = keysym,
+            _ => batch.bindings.push(binding),
+        }
+        bound.insert(keysym, stroke);
+        batch.strokes.push(stroke);
+        used += 1;
     }
 
     if !batch.strokes.is_empty() {
@@ -334,17 +354,61 @@ fn held_modifier_keycodes(conn: &RustConnection) -> Result<Vec<u8>, OutputError>
     Ok(held)
 }
 
-/// Bind `batch.remaps` into the server's keyboard mapping.
-fn apply_remaps(
-    conn: &RustConnection,
-    remaps: &[(u8, u32)],
+/// The keycodes one `ChangeKeyboardMapping` request must cover to write
+/// `bindings`: the whole span from the first to the last, because the request
+/// writes an unbroken range.
+fn binding_span(bindings: &[Binding]) -> (u8, u8) {
+    (bindings[0].keycode, bindings[bindings.len() - 1].keycode)
+}
+
+/// The keysyms the server reported for the keycodes `first` through `last`,
+/// inclusive, every level of each.
+fn original_keysyms(
+    original: &[u32],
+    first: u8,
+    last: u8,
     per_keycode: usize,
+    min_keycode: u8,
+) -> Vec<u32> {
+    let start = (first - min_keycode) as usize * per_keycode;
+    let end = (last - min_keycode) as usize * per_keycode + per_keycode;
+    original[start..end].to_vec()
+}
+
+/// The keysyms one `ChangeKeyboardMapping` request writes for `bindings`: each
+/// bound keycode gets its unshifted keysym on the level an unmodified press
+/// resolves to and its shifted keysym on the level Shift resolves to, and the
+/// keycodes in between - the span covers bound keycodes too, since the request
+/// cannot skip them - keep the keysyms they already had.
+fn span_keysyms(
+    bindings: &[Binding],
+    original: &[u32],
+    per_keycode: usize,
+    min_keycode: u8,
+) -> Vec<u32> {
+    let (first, last) = binding_span(bindings);
+    let mut keysyms = original_keysyms(original, first, last, per_keycode, min_keycode);
+    for binding in bindings {
+        let offset = (binding.keycode - first) as usize * per_keycode;
+        keysyms[offset] = binding.unshifted;
+        if per_keycode >= 2 {
+            keysyms[offset + 1] = binding.shifted;
+        }
+    }
+    keysyms
+}
+
+/// Bind `batch.bindings` into the server's keyboard mapping.
+fn apply_bindings(
+    conn: &RustConnection,
+    bindings: &[Binding],
+    original: &[u32],
+    per_keycode: usize,
+    min_keycode: u8,
 ) -> Result<(), OutputError> {
-    let keysyms: Vec<u32> = remaps
-        .iter()
-        .flat_map(|(_, keysym)| std::iter::repeat_n(*keysym, per_keycode))
-        .collect();
-    conn.change_keyboard_mapping(remaps.len() as u8, remaps[0].0, per_keycode as u8, &keysyms)
+    let (first, last) = binding_span(bindings);
+    let keysyms = span_keysyms(bindings, original, per_keycode, min_keycode);
+    conn.change_keyboard_mapping(last - first + 1, first, per_keycode as u8, &keysyms)
         .map_err(|e| OutputError::InjectionFailed(format!("X11 keymap change failed: {e}")))?;
     Ok(())
 }
@@ -358,24 +422,13 @@ fn restore_keymap(
     min_keycode: u8,
 ) -> Result<(), OutputError> {
     for batch in batches {
-        if batch.remaps.is_empty() {
+        if batch.bindings.is_empty() {
             continue;
         }
-        let keysyms: Vec<u32> = batch
-            .remaps
-            .iter()
-            .flat_map(|(keycode, _)| {
-                let offset = (keycode - min_keycode) as usize * per_keycode;
-                original[offset..offset + per_keycode].to_vec()
-            })
-            .collect();
-        conn.change_keyboard_mapping(
-            batch.remaps.len() as u8,
-            batch.remaps[0].0,
-            per_keycode as u8,
-            &keysyms,
-        )
-        .map_err(|e| OutputError::InjectionFailed(format!("X11 keymap restore failed: {e}")))?;
+        let (first, last) = binding_span(&batch.bindings);
+        let keysyms = original_keysyms(original, first, last, per_keycode, min_keycode);
+        conn.change_keyboard_mapping(last - first + 1, first, per_keycode as u8, &keysyms)
+            .map_err(|e| OutputError::InjectionFailed(format!("X11 keymap restore failed: {e}")))?;
     }
     Ok(())
 }
@@ -395,8 +448,11 @@ fn type_text(text: &str, options: TypeOptions) -> Result<(), OutputError> {
     let original = reply.keysyms;
 
     let layout = Layout::from_keysyms(&original, per_keycode, min_keycode);
-    let runs = spare_keycode_runs(&original, per_keycode, min_keycode);
-    let (batches, unbound) = plan(text, &layout, &runs);
+    let spares = spare_keycodes(&original, per_keycode, min_keycode);
+    // Two characters fit on a spare keycode when the mapping has a shifted
+    // level for them to sit on.
+    let levels = per_keycode.min(2);
+    let (batches, unbound) = plan(text, &layout, &spares, levels);
 
     if unbound > 0 {
         return Err(OutputError::InjectionFailed(format!(
@@ -407,7 +463,7 @@ fn type_text(text: &str, options: TypeOptions) -> Result<(), OutputError> {
         return Ok(());
     }
 
-    let needs_remap = batches.iter().any(|batch| !batch.remaps.is_empty());
+    let needs_remap = batches.iter().any(|batch| !batch.bindings.is_empty());
 
     let shift_keycode =
         Layout::keycode_for_keysym(&original, per_keycode, min_keycode, KS_SHIFT_LEFT).or_else(
@@ -427,8 +483,8 @@ fn type_text(text: &str, options: TypeOptions) -> Result<(), OutputError> {
     let last_batch = batches.len().saturating_sub(1);
 
     for (index, batch) in batches.iter().enumerate() {
-        if !batch.remaps.is_empty() {
-            apply_remaps(&conn, &batch.remaps, per_keycode)?;
+        if !batch.bindings.is_empty() {
+            apply_bindings(&conn, &batch.bindings, &original, per_keycode, min_keycode)?;
             sync(&conn)?;
             // Clients resolve keycodes through their own copy of the keyboard
             // mapping, refreshed on a keymap-change notification. Pressing a
@@ -605,119 +661,192 @@ mod tests {
     }
 
     #[test]
-    fn spare_keycode_runs_group_contiguous_keycodes() {
-        // per_keycode 2, min 8: keycodes 8, 9 bound; 10, 11 free
-        let runs = spare_keycode_runs(&[0x61, 0, 0x62, 0, 0, 0, 0, 0], 2, 8);
-        assert_eq!(runs, vec![vec![10, 11]]);
+    fn spare_keycodes_lists_unbound_keycodes_ascending() {
+        // per_keycode 2, min 8: keycodes 8 bound, 9 free, 10 bound, 11 free
+        let keysyms = [0x61, 0, 0, 0, 0x62, 0, 0, 0];
+        assert_eq!(spare_keycodes(&keysyms, 2, 8), vec![9, 11]);
+        assert_eq!(spare_keycodes(&[], 0, 8), Vec::<u8>::new());
+    }
+
+    /// The stroke a keycode is pressed for, so the tests read as text.
+    fn stroke(keycode: u8, shift: bool) -> Stroke {
+        Stroke { keycode, shift }
     }
 
     #[test]
-    fn spare_keycode_runs_prefer_long_runs_and_stay_contiguous() {
-        // keycodes: 8 bound, 9 free, 10 bound, 11..13 free
-        let keysyms = [0x61, 0, 0, 0, 0x62, 0, 0, 0, 0, 0, 0, 0];
-        let runs = spare_keycode_runs(&keysyms, 2, 8);
-        assert_eq!(runs, vec![vec![11, 12, 13], vec![9]]);
-    }
-
-    #[test]
-    fn plan_reuses_layout_characters_without_remapping() {
+    fn plan_reuses_layout_characters_without_binding() {
         let layout = Layout::from_keysyms(&[0x61, 0, 0, 0], 2, 8);
-        let (batches, unbound) = plan("ab", &layout, &[vec![10, 11]]);
+        let (batches, unbound) = plan("ab", &layout, &[10, 11], 2);
         assert_eq!(unbound, 0);
         assert_eq!(batches.len(), 1);
         assert_eq!(
             batches[0].strokes,
-            vec![
-                Stroke {
-                    keycode: 8,
-                    shift: false
-                },
-                Stroke {
-                    keycode: 10,
-                    shift: false
-                },
-            ]
+            vec![stroke(8, false), stroke(10, false)]
         );
-        assert_eq!(batches[0].remaps, vec![(10, 0x62)]);
+        assert_eq!(
+            batches[0].bindings,
+            vec![Binding {
+                keycode: 10,
+                unshifted: 0x62,
+                shifted: 0
+            }]
+        );
     }
 
     #[test]
     fn plan_binds_each_distinct_character_once_and_reuses_repeats() {
         let layout = Layout::from_keysyms(&[], 2, 8);
-        let (batches, unbound) = plan("中中", &layout, &[vec![10, 11]]);
+        let (batches, unbound) = plan("中中", &layout, &[10, 11], 2);
         assert_eq!(unbound, 0);
         assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].remaps, vec![(10, 0x0100_4e2d)]);
+        assert_eq!(
+            batches[0].bindings,
+            vec![Binding {
+                keycode: 10,
+                unshifted: 0x0100_4e2d,
+                shifted: 0
+            }]
+        );
         assert_eq!(batches[0].strokes.len(), 2);
         assert_eq!(batches[0].strokes[0], batches[0].strokes[1]);
     }
 
     #[test]
-    fn plan_keeps_a_whole_run_in_one_contiguous_batch() {
+    fn plan_puts_two_characters_on_one_spare_keycode_by_shift_level() {
         let layout = Layout::from_keysyms(&[], 2, 8);
-        let (batches, unbound) = plan("中文", &layout, &[vec![11, 12]]);
+        let (batches, unbound) = plan("中文", &layout, &[10, 11], 2);
         assert_eq!(unbound, 0);
         assert_eq!(batches.len(), 1);
         assert_eq!(
-            batches[0].remaps,
-            vec![(11, 0x0100_4e2d), (12, 0x0100_6587)]
+            batches[0].bindings,
+            vec![Binding {
+                keycode: 10,
+                unshifted: 0x0100_4e2d,
+                shifted: 0x0100_6587
+            }]
         );
-    }
-
-    #[test]
-    fn plan_splits_across_runs_keeping_each_run_contiguous() {
-        let layout = Layout::from_keysyms(&[], 2, 8);
-        let (batches, unbound) = plan("中文", &layout, &[vec![11], vec![9]]);
-        assert_eq!(unbound, 0);
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].remaps, vec![(11, 0x0100_4e2d)]);
         assert_eq!(
             batches[0].strokes,
-            vec![Stroke {
-                keycode: 11,
-                shift: false
-            }]
-        );
-        assert_eq!(batches[1].remaps, vec![(9, 0x0100_6587)]);
-        assert_eq!(
-            batches[1].strokes,
-            vec![Stroke {
-                keycode: 9,
-                shift: false
-            }]
+            vec![stroke(10, false), stroke(10, true)]
         );
     }
 
     #[test]
-    fn plan_reuses_a_run_for_later_characters() {
+    fn plan_uses_one_level_per_keycode_when_the_mapping_has_no_shifted_level() {
+        let layout = Layout::from_keysyms(&[], 1, 8);
+        let (batches, unbound) = plan("中文", &layout, &[10, 11], 1);
+        assert_eq!(unbound, 0);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            batches[0].bindings,
+            vec![
+                Binding {
+                    keycode: 10,
+                    unshifted: 0x0100_4e2d,
+                    shifted: 0
+                },
+                Binding {
+                    keycode: 11,
+                    unshifted: 0x0100_6587,
+                    shifted: 0
+                },
+            ]
+        );
+        assert_eq!(
+            batches[0].strokes,
+            vec![stroke(10, false), stroke(11, false)]
+        );
+    }
+
+    #[test]
+    fn plan_rebinds_the_same_keycodes_once_the_batch_is_full() {
         let layout = Layout::from_keysyms(&[], 2, 8);
-        let (batches, unbound) = plan("中文", &layout, &[vec![10]]);
+        // One spare keycode, two levels: the third distinct character needs a
+        // second mapping change.
+        let (batches, unbound) = plan("中文好", &layout, &[10], 2);
         assert_eq!(unbound, 0);
         assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].remaps, vec![(10, 0x0100_4e2d)]);
-        assert_eq!(batches[1].remaps, vec![(10, 0x0100_6587)]);
+        assert_eq!(
+            batches[0].bindings,
+            vec![Binding {
+                keycode: 10,
+                unshifted: 0x0100_4e2d,
+                shifted: 0x0100_6587
+            }]
+        );
+        assert_eq!(
+            batches[0].strokes,
+            vec![stroke(10, false), stroke(10, true)]
+        );
+        assert_eq!(
+            batches[1].bindings,
+            vec![Binding {
+                keycode: 10,
+                unshifted: 0x0100_597d,
+                shifted: 0
+            }]
+        );
+        assert_eq!(batches[1].strokes, vec![stroke(10, false)]);
     }
 
     #[test]
-    fn plan_wraps_around_when_text_outlasts_the_runs() {
-        let layout = Layout::from_keysyms(&[], 2, 8);
-        let text: String = (0..5)
-            .map(|i| char::from_u32(0x4e00 + i).unwrap())
-            .collect();
-        let (batches, unbound) = plan(&text, &layout, &[vec![10, 11]]);
+    fn plan_types_a_sentence_of_unmapped_characters_in_one_keymap_change() {
+        // The unused keycodes an Xorg session reports: fifteen of them, one run
+        // of two and the rest singletons. Two levels each covers thirty
+        // characters, so a dictated sentence needs one mapping change, not one
+        // per character - the difference between typing in a burst and typing
+        // a character at a time.
+        let spares = [
+            8u8, 97, 103, 120, 132, 149, 154, 168, 178, 183, 184, 219, 222, 230, 248,
+        ];
+        let layout = Layout::from_keysyms(&[], 4, 8);
+        let text = "今天天气很好我们一起去公园散步看看花吧";
+        let distinct = text.chars().collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(distinct, 17);
+
+        let (batches, unbound) = plan(text, &layout, &spares, 2);
         assert_eq!(unbound, 0);
-        assert_eq!(batches.len(), 3);
-        assert_eq!(batches[0].remaps.len(), 2);
-        assert_eq!(batches[1].remaps.len(), 2);
-        assert_eq!(batches[2].remaps.len(), 1);
-        // the third batch reuses the first run's keycodes
-        assert_eq!(batches[0].remaps[0].0, batches[2].remaps[0].0);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].bindings.len(), 9);
+        assert_eq!(batches[0].strokes.len(), text.chars().count());
+    }
+
+    #[test]
+    fn plan_binds_spare_keycodes_across_a_bound_one() {
+        let layout = Layout::from_keysyms(&[], 2, 8);
+        // keycodes 9 and 11 are spare, 10 is bound by the layout
+        let keysyms = [0x61, 0, 0, 0, 0x62, 0, 0, 0];
+        assert_eq!(spare_keycodes(&keysyms, 2, 8), vec![9, 11]);
+        let (batches, unbound) = plan("中文好", &layout, &[9, 11], 2);
+        assert_eq!(unbound, 0);
+        assert_eq!(batches.len(), 1);
+        // The batch binds keycode 11 as well, so the request has to cover the
+        // bound keycode 10 in between.
+        assert_eq!(
+            batches[0].bindings,
+            vec![
+                Binding {
+                    keycode: 9,
+                    unshifted: 0x0100_4e2d,
+                    shifted: 0x0100_6587
+                },
+                Binding {
+                    keycode: 11,
+                    unshifted: 0x0100_597d,
+                    shifted: 0
+                },
+            ]
+        );
+        assert_eq!(
+            batches[0].strokes,
+            vec![stroke(9, false), stroke(9, true), stroke(11, false)]
+        );
     }
 
     #[test]
     fn plan_with_no_spare_keycodes_binds_nothing() {
         let layout = Layout::from_keysyms(&[], 2, 8);
-        let (batches, unbound) = plan("中", &layout, &[]);
+        let (batches, unbound) = plan("中", &layout, &[], 2);
         assert!(batches.is_empty());
         assert_eq!(unbound, 1);
     }
@@ -725,7 +854,7 @@ mod tests {
     #[test]
     fn plan_skips_characters_with_no_keysym() {
         let layout = Layout::from_keysyms(&[], 2, 8);
-        let (batches, unbound) = plan("\u{7}", &layout, &[vec![10]]);
+        let (batches, unbound) = plan("\u{7}", &layout, &[10], 2);
         assert!(batches.is_empty());
         assert_eq!(unbound, 0);
     }
@@ -733,25 +862,88 @@ mod tests {
     #[test]
     fn mixed_text_keeps_order() {
         let layout = Layout::from_keysyms(&[0x61, 0, 0, 0], 2, 8);
-        let (batches, unbound) = plan("a中b", &layout, &[vec![10, 11]]);
+        let (batches, unbound) = plan("a中b", &layout, &[10, 11], 2);
         assert_eq!(unbound, 0);
         assert_eq!(
             batches[0].strokes,
+            vec![stroke(8, false), stroke(10, false), stroke(10, true)]
+        );
+        assert_eq!(
+            batches[0].bindings,
+            vec![Binding {
+                keycode: 10,
+                unshifted: 0x0100_4e2d,
+                shifted: 0x62
+            }]
+        );
+    }
+
+    #[test]
+    fn span_keysyms_writes_the_bound_levels_over_the_original_ones() {
+        // keycode 9's four levels; the binding owns levels 0 and 1, levels 2
+        // and 3 keep what the server reported.
+        let original = [0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68];
+        let bindings = [Binding {
+            keycode: 9,
+            unshifted: 0x0100_4e2d,
+            shifted: 0x0100_6587,
+        }];
+        assert_eq!(
+            span_keysyms(&bindings, &original, 4, 8),
+            vec![0x0100_4e2d, 0x0100_6587, 0x67, 0x68]
+        );
+    }
+
+    #[test]
+    fn span_keysyms_restates_the_keycodes_between_two_bindings() {
+        // A request cannot skip keycode 9, which the layout binds, so its
+        // keysyms are written back unchanged.
+        let original = [
+            0x61, 0x62, 0x63, 0x64, // keycode 8
+            0x65, 0x66, 0x67, 0x68, // keycode 9
+            0x69, 0x6a, 0x6b, 0x6c, // keycode 10
+        ];
+        let bindings = [
+            Binding {
+                keycode: 8,
+                unshifted: 0x0100_4e2d,
+                shifted: 0x0100_6587,
+            },
+            Binding {
+                keycode: 10,
+                unshifted: 0x0100_597d,
+                shifted: 0,
+            },
+        ];
+        assert_eq!(
+            span_keysyms(&bindings, &original, 4, 8),
             vec![
-                Stroke {
-                    keycode: 8,
-                    shift: false
-                },
-                Stroke {
-                    keycode: 10,
-                    shift: false
-                },
-                Stroke {
-                    keycode: 11,
-                    shift: false
-                },
+                0x0100_4e2d,
+                0x0100_6587,
+                0x63,
+                0x64, // keycode 8
+                0x65,
+                0x66,
+                0x67,
+                0x68, // keycode 9, untouched
+                0x0100_597d,
+                0,
+                0x6b,
+                0x6c, // keycode 10
             ]
         );
-        assert_eq!(batches[0].remaps, vec![(10, 0x0100_4e2d), (11, 0x62)]);
+    }
+
+    #[test]
+    fn original_keysyms_returns_the_whole_span() {
+        let original = [0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68];
+        assert_eq!(
+            original_keysyms(&original, 8, 9, 4, 8),
+            vec![0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68]
+        );
+        assert_eq!(
+            original_keysyms(&original, 9, 9, 4, 8),
+            vec![0x65, 0x66, 0x67, 0x68]
+        );
     }
 }

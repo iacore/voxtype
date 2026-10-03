@@ -2686,9 +2686,17 @@ The `x11` driver types a character the active layout cannot produce (CJK, for
 example) by binding it to a spare keycode first. Clients resolve keycodes
 through their own copy of the keyboard mapping, which they refresh when the
 server tells them it changed, so pressing a remapped keycode too early loses or
-swaps the character. One wait covers a whole batch of characters, and a
-transcription normally needs a single mapping change: only text with more
-distinct characters than the mapping has unused keycodes takes more.
+swaps the character.
+
+One wait covers a whole batch of characters, and a transcription normally needs
+a single mapping change. The driver binds every spare keycode in one request -
+a `ChangeKeyboardMapping` request writes an unbroken range of keycodes, so the
+request spans from the lowest spare keycode to the highest and restates the
+keysyms of the bound keycodes it covers - and puts two characters on each spare
+keycode, one unshifted and one shifted. On a typical Xorg session that is about
+15 spare keycodes and 30 characters per change, so only a dictation with more
+distinct characters than that waits again. The wait is paid per change, not per
+character: the same sentence costs two waits whether it is 5 characters or 30.
 
 The default of 20 ms is roughly four times the shortest wait that kept a GTK4
 entry intact on the slowest machine this was measured on (5 ms). Raise it if
