@@ -19,6 +19,8 @@ verification.
 | [Single Instance Enforcement](smoke_tests/single-instance-enforcement.md) | A second `voxtype daemon` invocation refuses to start |
 | [Signal Handling](smoke_tests/signal-handling.md) | SIGTERM and SIGINT shut the daemon down cleanly |
 | [Config Validation](smoke_tests/config-validation.md) | Invalid config produces a useful error, not a panic |
+| [Baseline v2 Floor](smoke_tests/baseline-v2-floor.md) | The baseline release asset runs real inference on a QEMU-modeled x86-64-v2 CPU (#740 class) |
+| [Packaged Upgrade](smoke_tests/packaged-upgrade.md) | deb/rpm in-place upgrade preserves the user config and delivers the new file surface |
 
 ## CLI and file I/O
 
@@ -83,6 +85,7 @@ verification.
 | [X11 Session Clipboard](smoke_tests/x11-session-clipboard-xclip-xsel.md) | xclip/xsel clipboard output on X11 |
 | [Output Chain Verification](smoke_tests/output-chain-verification.md) | Full fallback chain wtype, dotool, ydotool, clipboard |
 | [Delay Options](smoke_tests/delay-options.md) | `--delay` and per-driver inter-keystroke delays |
+| [Native X11 Typing](smoke_tests/x11-native-typing.md) | The opt-in `x11` driver types CJK without clipboard or external tools; the keymap settle is what makes it work |
 | [Post-Processing Command](smoke_tests/post-processing-command.md) | LLM cleanup command runs on the transcript before output |
 
 ## Integrations

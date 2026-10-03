@@ -18,6 +18,11 @@
 //! 3. pbcopy - Native macOS clipboard
 //!
 //! Paste mode (clipboard + Ctrl+V) helps with system with non US keyboard layouts.
+//!
+//! Opt-in drivers, not part of the default chain:
+//! - x11 - Native X11 typing through XTEST with a generated Unicode keymap.
+//!   Types CJK and other text the active layout cannot produce, with no
+//!   clipboard and no external typing tool. Enable with `driver_order = ["x11"]`.
 
 #[cfg(target_os = "macos")]
 pub mod cgevent;
@@ -36,6 +41,8 @@ pub mod post_process;
 pub mod session;
 pub mod streaming;
 pub mod wtype;
+#[cfg(target_os = "linux")]
+pub mod x11;
 pub mod xclip;
 pub mod xdotool;
 pub mod ydotool;
@@ -285,6 +292,13 @@ fn create_driver_output(
             config.dotool_xkb_layout.clone(),
             config.dotool_xkb_variant.clone(),
         )),
+        OutputDriver::X11 => Box::new(x11::X11Output::new(
+            config.type_delay_ms,
+            pre_type_delay_ms,
+            config.x11_keymap_settle_ms,
+            config.auto_submit,
+            config.append_text.clone(),
+        )),
         OutputDriver::Xdotool => Box::new(xdotool::XdotoolOutput::new(
             config.type_delay_ms,
             pre_type_delay_ms,
@@ -485,8 +499,10 @@ pub struct OutputOptions<'a> {
 /// keybindings when modifiers are held. Used to filter the chain when the
 /// modifier-release wait times out.
 fn is_keystroke_method(name: &str) -> bool {
-    matches!(name, "wtype" | "eitype" | "dotool" | "xdotool" | "ydotool")
-        || name.starts_with("paste")
+    matches!(
+        name,
+        "wtype" | "eitype" | "dotool" | "x11" | "xdotool" | "ydotool"
+    ) || name.starts_with("paste")
 }
 
 /// Try each output method in the chain until one succeeds

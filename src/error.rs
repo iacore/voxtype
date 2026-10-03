@@ -127,6 +127,18 @@ pub enum OutputError {
     #[error("xdotool not found in PATH. Install via your package manager (e.g. sudo pacman -S xdotool).")]
     XdotoolNotFound,
 
+    #[error(
+        "Cannot reach the X11 display: {0}\n  \
+         The x11 output driver types into X11 (Xorg or XWayland) windows."
+    )]
+    X11DisplayUnavailable(String),
+
+    #[error(
+        "This X11 display has no XTEST extension, so the x11 output driver cannot type.\n  \
+         XTEST is missing from some remote or nested servers; use another output driver."
+    )]
+    X11XtestMissing,
+
     #[error("wtype not found in PATH. Install via your package manager.")]
     WtypeNotFound,
 
